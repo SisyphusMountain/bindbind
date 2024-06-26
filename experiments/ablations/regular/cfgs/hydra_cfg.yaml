@@ -1,0 +1,16 @@
+batch_size: 3
+addNoise: 5.0
+num_workers: 10
+
+logs:
+  wandb:
+    enable: False
+
+  tensorboard:
+    enable: False
+  
+  csv:
+    enable: True
+    save_dir: "/fs/pool/pool-marsot/tankbind_enzo/bind/ML/outputs"
+  
+  flush_logs_every_n_steps: 1000
