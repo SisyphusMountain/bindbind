@@ -167,7 +167,7 @@ class TankBindModel(L.LightningModule):
         affinity_target = data.affinity
         y_target = data['protein', 'distance_to', 'compound'].edge_attr
         e = self.current_epoch
-        affinity_coeff = 0.01 
+        affinity_coeff = min(0.01, 0.01*2**e/2**15)
         affinity_mask = data.ligand_is_mostly_contained_in_pocket
         pocket_mask = data.ligand_in_pocket_mask
         mse, affinity_loss = total_loss(y_pred, y_target, affinity_pred, affinity_target, pocket_mask, affinity_mask)
@@ -177,10 +177,10 @@ class TankBindModel(L.LightningModule):
         self.log('train_affinity_loss', affinity_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log('affinity_coeff', affinity_coeff, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log('train_loss', loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-        self.log("y_pred_mean", y_pred.clamp(0, 10).mean(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
-        self.log("y_pred_std", y_pred.clamp(0,10).std(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
-        self.log("y_target_mean", y_target.clamp(0, 10).mean(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
-        self.log("y_target_std", y_target.clamp(0, 10).std(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        self.log("y_pred_mean", y_pred.mean(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        self.log("y_pred_std", y_pred.std(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        self.log("y_target_mean", y_target.mean(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        self.log("y_target_std", y_target.std(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
         self.log("affinity_pred_mean", affinity_pred.mean(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
         self.log("affinity_pred_std", affinity_pred.std(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
         self.log("affinity_target_mean", affinity_target.mean(), on_step=True, on_epoch=False, prog_bar=False, logger=True)

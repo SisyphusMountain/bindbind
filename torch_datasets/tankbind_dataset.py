@@ -55,10 +55,11 @@ class TankBindDataset(Dataset):
         data = make_tankbind_data_object(complex_features)
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-             # concatenate the ESM embeddings along the embedding dimension
-            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, self.esm_embeddings[protein_name]], dim=-1) # concatenate the ESM embeddings
+            # concatenate the ESM embeddings along the embedding dimension
+            esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
+            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
        
-        data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
+        data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name].clamp(0,10)
         mask = self.protein_nodes_to_keep[protein_name][pocket_index]
         if mask.sum()<5:
             mask = torch.zeros_like(mask, dtype=torch.bool)
@@ -153,12 +154,14 @@ class TankBindDatasetWithoutp2rank(Dataset):
         protein_name = self.proteins_df.iloc[idx]['protein_names']
 
         complex_features = self.data[protein_name]
+
         complex_features['affinity'] = self.affinity_dict[protein_name]
         data = make_tankbind_data_object(complex_features)
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-             # concatenate the ESM embeddings along the embedding dimension
-            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, self.esm_embeddings[protein_name]], dim=-1) # concatenate the ESM embeddings
+            # concatenate the ESM embeddings along the embedding dimension
+            esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
+            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
        
         data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
         mask = self.protein_nodes_to_keep[protein_name][0]
@@ -250,8 +253,9 @@ class TankBindTestDataset(Dataset):
         data = make_tankbind_data_object(complex_features)
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-             # concatenate the ESM embeddings along the embedding dimension
-            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, self.esm_embeddings[protein_name]], dim=-1) # concatenate the ESM embeddings
+            # concatenate the ESM embeddings along the embedding dimension
+            esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
+            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
        
         data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
         mask = self.protein_nodes_to_keep[protein_name][pocket_index]
@@ -349,8 +353,9 @@ class TankBindValDataset(Dataset):
         data = make_tankbind_data_object(complex_features)
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-             # concatenate the ESM embeddings along the embedding dimension
-            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, self.esm_embeddings[protein_name]], dim=-1) # concatenate the ESM embeddings
+            # concatenate the ESM embeddings along the embedding dimension
+            esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
+            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
        
         data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
         mask = self.protein_nodes_to_keep[protein_name][pocket_index]

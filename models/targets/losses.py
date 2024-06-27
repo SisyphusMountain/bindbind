@@ -11,7 +11,7 @@ def mse_loss(y_pred, y_target):
         Predicted pairwise distances between atoms.
     y_target: torch.Tensor: shape [n_batch*n_residues*n_atoms]
     """
-    return F.mse_loss(y_pred.clamp(0, 10), y_target.clamp(0, 10))
+    return F.mse_loss(y_pred, y_target)
 
 def affinity_loss(affinity_pred, affinity_target):
     """#FIXME probably does not make sense from a physical point of view

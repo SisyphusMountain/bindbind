@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch_geometric
 from scipy.spatial.distance import cdist
 from bindbind.datasets.processing.constants import LETTER_TO_NUM_TANKBIND, THREE_TO_ONE_TANKBIND
+from bindbind.datasets.processing.ligand_features.tankbind_ligand_features import read_molecule
 from Bio.PDB.PDBIO import Select, PDBIO
 from Bio.PDB.PDBParser import PDBParser
 from rdkit import Chem
@@ -13,7 +14,6 @@ import math
 #region helper
 
 def create_tankbind_protein_features(protein_path):
-
     parser = PDBParser(QUIET=True)
     structure = parser.get_structure("", protein_path) # no name required to parse the structure
     residue_list = clean_residues(structure.get_residues())
@@ -156,7 +156,7 @@ def get_chains_in_contact_with_compound(protein_path, target_path, ligand_path, 
     protein_atoms = [atom for residue in residues for atom in residue.get_atoms()]
     protein_atom_coordinates = np.array([atom.coord for atom in protein_atoms])
     chains = np.array([atom.full_id[2] for atom in protein_atoms])
-    ligand = Chem.MolFromMolFile(ligand_path)
+    ligand, _ = read_molecule(ligand_path, ligand_path.replace("_renamed.sdf", ".mol2"))
     ligand_atom_coordinates = np.array(ligand.GetConformer().GetPositions())
     protein_ligand_distances = cdist(protein_atom_coordinates, ligand_atom_coordinates)
     protein_atom_is_near_a_ligand_atom = np.any(protein_ligand_distances < cutoff, axis=-1)
@@ -169,10 +169,10 @@ def get_chains_in_contact_with_compound(protein_path, target_path, ligand_path, 
     io.set_structure(structure)
     io.save(target_path, SelectChainsInContactWithCompound())
     indexes_in_contact_with_compound = []
-    for residue in residues:
+    for index, residue in enumerate(residues):
         _, _, chain, (_, _, _) = residue.full_id
         if chain in chains_in_contact_with_compound:
-            indexes_in_contact_with_compound.append(residue.id[1])
+            indexes_in_contact_with_compound.append(index)
     return chains_in_contact_with_compound, indexes_in_contact_with_compound
 def get_pockets():
     """Create pockets using p2rank. We don't need it for now since I have already

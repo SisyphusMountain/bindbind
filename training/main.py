@@ -7,6 +7,7 @@ sys.path.append("/fs/pool/pool-marsot/")
 import logging
 import hydra
 from bindbind.models.model import TankBindModel
+from tankbind_enzo.bind.ML.modules.model import TankBindModel as old_TankBindModel 
 from bindbind.torch_datasets.tankbind_dataset import TankBindDataset, TankBindDatasetWithoutp2rank, NoisyCoordinates
 from bindbind.tests.debug import TankBindDebugDataset
 from bindbind.training.sampler import TankBindSampler 
@@ -20,8 +21,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARN)
 
 @hydra.main(version_base=None,
-            config_path="/fs/pool/pool-marsot/bindbind/training/configs",
-            config_name="base_cfg",)
+            config_path="/fs/pool/pool-marsot/bindbind/training/configs",)
 def main(cfg):
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(cfg.seed)
@@ -30,11 +30,14 @@ def main(cfg):
                                save_dir=cfg.logs.save_dir,)
     csv_logger = pl.loggers.CSVLogger(save_dir=cfg.logs.save_dir,
                                       )
-    model = TankBindModel(cfg=cfg,
-                    esm_features = cfg.ablations.esm_features,
-                    use_gvp=cfg.ablations.use_gvp,
-                    logger=wandb_logger,
-                    fast_attention=cfg.ablations.fast_attention,)
+    if cfg.tankbind.old_model:
+        model = old_TankBindModel()
+    else:
+        model = TankBindModel(cfg=cfg,
+                        esm_features = cfg.ablations.esm_features,
+                        use_gvp=cfg.ablations.use_gvp,
+                        logger=wandb_logger,
+                        fast_attention=cfg.ablations.fast_attention,)
 
     if not cfg.debug:
         dataset = TankBindDatasetWithoutp2rank(add_esm_embeddings=cfg.ablations.esm_features, noise_range=cfg.training.add_noise, contact_threshold=cfg.tankbind.contact_threshold, pocket_radius=cfg.tankbind.pocket_radius)
@@ -81,18 +84,20 @@ def main(cfg):
         pretrain_dataset = TankBindDataset(add_esm_embeddings=cfg.ablations.esm_features, noise_range=cfg.training.add_noise, contact_threshold=cfg.tankbind.contact_threshold)
         pretrain_dataset_indices = (pretrain_dataset.pockets_df['name'].isin(train_indices).index).tolist()
         pretrain_dataset = pretrain_dataset[pretrain_dataset_indices]
-        pretrain_dataloader = TankBindDataLoader(pretrain_dataset, batch_size=cfg.training.batch_size, shuffle=True, num_workers=cfg.num_workers,)
+        pretrain_dataloader = TankBindDataLoader(pretrain_dataset, batch_size=cfg.training.batch_size, follow_batch=["ligand_in_pocket_mask"], shuffle=True, num_workers=cfg.num_workers,)
         pre_trainer = pl.Trainer(max_epochs=cfg.training.pretraining_epochs,
                                     logger=wandb_logger,
                                     log_every_n_steps=100,
                                     accelerator="auto",
                                     precision=cfg.training.precision,
                                     reload_dataloaders_every_n_epochs=1,
-                                    callbacks=get_callbacks(cfg,train,swa=cfg.training.swa.activate),)
-        pre_trainer.fit(model, pretrain_dataloader, val_dataloader)
+                                    callbacks=get_callbacks(cfg,train,swa=cfg.training.swa.activate,),
+                                    )
+        pre_trainer.fit(model, pretrain_dataloader, val_dataloader, ckpt_path="/fs/pool/pool-marsot/bindbind/training/logs/protein_binding/c9h2kwqo/checkpoints/epoch=14-step=425130.ckpt")
         del pretrain_dataloader
         del pretrain_dataset_indices
         del pretrain_dataset
+
     trainer = pl.Trainer(max_epochs=cfg.training.epochs,
                                logger=[wandb_logger, csv_logger],
                                log_every_n_steps=100,
@@ -112,7 +117,8 @@ def main(cfg):
     
     
     # See documentation: to profile training, we can use pytorch_lightning profiles: trainer = Trainer(profiler="advanced")
-    trainer.fit(model, train_dataloader, val_dataloader)
+    trainer.fit(model, train_dataloader, val_dataloader, ckpt_path="/fs/pool/pool-marsot/bindbind/training/logs/protein_binding/c9h2kwqo/checkpoints/epoch=68-step=188370.ckpt"
+)
 
 
 if __name__ == "__main__":

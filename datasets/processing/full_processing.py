@@ -33,14 +33,16 @@ def make_full_dict(directory="/fs/pool/pool-marsot/bindbind/datasets/data/equibi
     #     reorder_compound_smiles(sdf_path, mol2_path)
     # # cutting off the protein chains far from the ligand
     # logger.info("Cutting off protein chains far from the ligand.")
-    # for protein_path in tqdm(protein_paths):
-    #     assert "_protein_processed.pdb" in protein_path
-    #     protein_chains_in_contact_with_ligand_path = protein_path.replace("_protein_processed.pdb", "_protein_chains_in_contact_with_ligand.pdb")
-    #     ligand_path = protein_path.replace("_protein_processed.pdb", "_ligand_renumbered.sdf")
-    #     get_chains_in_contact_with_compound(protein_path=protein_path,
-    #                                         target_path=protein_chains_in_contact_with_ligand_path,
-    #                                         ligand_path=ligand_path,
-    #                                         cutoff=10.0)
+    # indices_in_contact_with_compound_dict = {}
+    # for protein_path, protein_name in tqdm(zip(protein_paths, protein_names)):
+        # assert "_protein_processed.pdb" in protein_path
+        # protein_chains_in_contact_with_ligand_path = protein_path.replace("_protein_processed.pdb", "_protein_chains_in_contact_with_ligand.pdb")
+        # ligand_path = protein_path.replace("_protein_processed.pdb", "_ligand_renumbered.sdf")
+        # _chains_in_contact_with_compound, indexes_in_contact_with_compound = get_chains_in_contact_with_compound(protein_path=protein_path,
+        #                                     target_path=protein_chains_in_contact_with_ligand_path,
+        #                                     ligand_path=ligand_path,
+        #                                     cutoff=10.0)
+        # indices_in_contact_with_compound_dict[protein_name] = indexes_in_contact_with_compound
     # logger.info("Performing P2rank pocket prediction.")
     # predictions_folder = "/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/p2rank_predictions_new"
     # with open(f"{predictions_folder}/p2rank_predictions.ds", "w") as f:
@@ -90,6 +92,7 @@ def make_full_dict(directory="/fs/pool/pool-marsot/bindbind/datasets/data/equibi
         full_dict["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] = torch.logical_and(protein_nodes_close_to_ligand, protein_nodes_close_to_compound_center).sum()
         with open(output_path_shape.format(protein_name, protein_name), "wb") as f:
             pickle.dump(full_dict, f)
+        full_dict["tankbind_residue_indices_in_contact_with_compound"] = torch.tensor(indices_in_contact_with_compound_dict[protein_name], dtype = torch.long)
     with open("/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/compound_coordinates_dict.pkl", "wb") as f:
         pickle.dump(compound_coordinates_dict, f)
 
