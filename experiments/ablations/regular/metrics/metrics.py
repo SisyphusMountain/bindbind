@@ -16,8 +16,7 @@ torch.set_num_threads(1)
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 import sys
-tankbind_src_folder = "/gxr/luwei/tankbind_github/TankBind/tankbind"
-sys.path.insert(0, tankbind_src_folder)
+
 
 import logging
 

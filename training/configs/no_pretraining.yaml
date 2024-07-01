@@ -1,47 +1,6 @@
-debug: false
-seed: 42
-num_workers: 10
-
-logs:
-  save_dir: "/fs/pool/pool-marsot/bindbind/training/logs"
-  flush_logs_every_n_steps: 100
-
-splits:
-  train_path: "/fs/pool/pool-marsot/tankbind_enzo/bind/packages/EquiBind/data/timesplit_no_lig_overlap_train"
-  val_path: "/fs/pool/pool-marsot/tankbind_enzo/bind/packages/EquiBind/data/timesplit_no_lig_overlap_val"
-
-tankbind:
-  pocket_radius: 20.0
-  contact_threshold: 8.0
-  old_model: false
+defaults:
+  - base_cfg
+  - _self_
 
 ablations:
-  esm_features: null
-  pretraining: false
-  use_gvp: true
-  fast_attention: true
-
-training:
-  add_noise: 5.0
-  lr: 0.00001
-  precision: "32"
-  available_memory_gb: 50
-  max_batch_size: 3
-  batch_size: ${training.max_batch_size}
-  adaptative_batch_size: false
-  gradient_clip_val: 100
-  swa: 
-    lr: 0.001
-    swa_epoch_start: 50
-    activate: false
-  epochs: 200
-  pretraining_epochs: 15
-  scheduler: null
-  evaluation: true
-  empty_cache: false
-  log_every_n_epochs: 1
-  log_memory_allocated: false
-hydra:
-  verbose: false
-  run:
-    dir: ${logs.save_dir}
+  pretraining: true

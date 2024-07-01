@@ -45,7 +45,7 @@ class FastTriangleSelfAttention(nn.Module):
         self.attention_head_size = embedding_channels // num_attention_heads
         self.linear_qkv = nn.Linear(embedding_channels, 3*embedding_channels, bias=False)
         self.output_linear = nn.Linear(embedding_channels, embedding_channels)
-    def forward(self, z, z_mask_attention_float):
+    def forward(self, z, z_mask_attention_float, z_mask):
         """
         Parameters
         ----------
@@ -95,28 +95,24 @@ class TankBindTriangleSelfAttention(torch.nn.Module):
         x = x.view(*new_x_shape)
         return x
 
-    def forward(self, z, z_mask):
+    def forward(self, z, z_mask_float, z_mask):
         # z of shape b, i, j, embedding_channels, where i is protein dim, j is compound dim.
         # z_mask of shape b, i, j
+
         z = self.layernorm(z)
-        p_length = z.shape[1]
-        batch_n = z.shape[0]
-        # new_z = torch.zeros(z.shape, device=z.device)
-        z_i = z
-        z_mask_i = z_mask.view((batch_n, p_length, 1, 1, -1))
-        attention_mask_i = 1e9 * (z_mask_i.to(z.dtype) - 1.0)
+   
+
         # q, k, v of shape b, j, h, c
-        q = self.reshape_last_dim(
-            self.linear_q(z_i)
-        )  #  * (self.attention_head_size**(-0.5))
-        k = self.reshape_last_dim(self.linear_k(z_i))
-        v = self.reshape_last_dim(self.linear_v(z_i))
-        logits = torch.einsum("biqhc,bikhc->bihqk", q, k) + attention_mask_i
+        q = self.reshape_last_dim(self.linear_q(z))  #  * (self.attention_head_size**(-0.5))
+        k = self.reshape_last_dim(self.linear_k(z))
+        v = self.reshape_last_dim(self.linear_v(z))
+        #import IPython; IPython.embed()
+        logits = torch.einsum("biqhc,bikhc->bihqk", q, k) + z_mask_float
         weights = nn.Softmax(dim=-1)(logits)
         # weights of shape b, h, j, j
         # attention_probs = self.dp(attention_probs)
         weighted_avg = torch.einsum("bihqk,bikhc->biqhc", weights, v)
-        g = self.reshape_last_dim(self.g(z_i)).sigmoid()
+        g = self.reshape_last_dim(self.g(z)).sigmoid()
         output = g * weighted_avg
         new_output_shape = output.size()[:-2] + (self.all_head_size,)
         output = output.view(*new_output_shape)
@@ -124,7 +120,8 @@ class TankBindTriangleSelfAttention(torch.nn.Module):
         # z[:, i] = output
         z = output
         # print(g.shape, block1.shape, block2.shape)
-        z = self.final_linear(z) * z_mask.unsqueeze(-1)
+        #import IPython; IPython.embed()
+        z = self.final_linear(z) * z_mask.float().unsqueeze(-1)
         return z
 
 
@@ -834,18 +831,19 @@ class TankBindUnembedding(nn.Module):
         super().__init__()
         self.glu = TankBindGLULinear(embedding_channels, embedding_channels)
         self.linear = nn.Linear(embedding_channels, 1)
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.tensor(0.27))
         self.batch_norm = nn.BatchNorm1d(embedding_channels)
         self.energy_linear = nn.Linear(embedding_channels, 1)
     def forward(self, z, z_mask, z_mask_flat):
         y_pred = self.linear(z).flatten()[z_mask_flat]
-        y_pred = F.sigmoid(y_pred) * 10
+        y_pred = 10*nn.functional.tanh(y_pred)+self.bias
+
         z_glu = self.glu(z)
         z_glu = self.batch_norm(z_glu.view(-1, z_glu.shape[-1])).view(z_glu.shape)
         z_glu = F.relu(z_glu)
         z_glu = self.energy_linear(z_glu).squeeze(-1) * z_mask
         z_glu = z_glu.sum(dim=(-1, -2))/100
-        affinity_pred = 2*torch.tanh(z_glu)
+        affinity_pred = 5*torch.tanh(z_glu)
         return y_pred, affinity_pred
 
 class NoSigmoidUnembedding(nn.Module):
@@ -888,6 +886,6 @@ class TankBindTrigonometry(nn.Module):
         #if torch.isnan(z).any():
         #    logger.info(f"[Beginning Batch - trigonometry output] NaNs in protein_to_compound")
         #z = z + self.dropout(torch.nan_to_num(self.triangle_self_attention(z, z_mask_attention_float),nan=0))
-        z = z + self.dropout(self.triangle_self_attention(z, z_mask_attention_float))
+        z = z + self.dropout(self.triangle_self_attention(z, z_mask_attention_float, z_mask))
         z = self.transition(z)
         return z

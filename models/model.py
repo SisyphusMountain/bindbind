@@ -309,3 +309,4 @@ def halve_batch(batch):
     first_half.ligand_in_pocket_mask = first_half.ligand_in_pocket_mask[:protein_compound_ptr[new_size]]
     second_half.ligand_in_pocket_mask = second_half.ligand_in_pocket_mask[protein_compound_ptr[new_size]:]
     return first_half, second_half
+

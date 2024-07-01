@@ -13,23 +13,23 @@ splits:
 tankbind:
   pocket_radius: 20.0
   contact_threshold: 8.0
-
+  old_model: false
 ablations:
   esm_features: null
   pretraining: true
   use_gvp: true
   fast_attention: true
-
+  make_input_dims_divisible_by_8: true
 training:
-  add_noise: 5.0
+  add_noise: 0.0
   lr: 0.00001
   precision: "32"
   available_memory_gb: 50
-  max_batch_size: 6
+  max_batch_size: 8
   batch_size: ${training.max_batch_size}
   adaptative_batch_size: false
   gradient_clip_val: 0.5
-  swa: 
+  swa:
     lr: 0.001
     swa_epoch_start: 50
     activate: false
@@ -38,7 +38,7 @@ training:
   scheduler: null
   evaluation: true
   empty_cache: false
-  log_every_n_epochs: 1
+  log_every_n_epochs: 10
   log_memory_allocated: false
 hydra:
   verbose: false

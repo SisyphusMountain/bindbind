@@ -8,7 +8,7 @@ import logging
 import hydra
 from bindbind.models.model import TankBindModel
 from tankbind_enzo.bind.ML.modules.model import TankBindModel as old_TankBindModel 
-from bindbind.torch_datasets.tankbind_dataset import TankBindDataset, TankBindDatasetWithoutp2rank, NoisyCoordinates
+from bindbind.torch_datasets.tankbind_dataset import TankBindDataset, TankBindDatasetWithoutp2rank
 from bindbind.tests.debug import TankBindDebugDataset
 from bindbind.training.sampler import TankBindSampler 
 from bindbind.torch_datasets.tankbind_dataloader import TankBindDataLoader
@@ -55,8 +55,6 @@ def main(cfg):
         train = dataset[train_dataset_indices]
         val = dataset[val_dataset_indices]
         val.noise_range=0.0
-        val.recompute_for_new_epoch()
-        assert train.noise_range != 0.0
     elif cfg.debug:
         train = dataset
     
@@ -71,8 +69,18 @@ def main(cfg):
                                         available_memory_gb=cfg.training.available_memory_gb,
                                         shuffle = False,
         )
-        train_dataloader = TankBindDataLoader(train, batch_sampler=train_sampler, follow_batch=["ligand_in_pocket_mask"], shuffle=False, num_workers=cfg.num_workers,)
-        val_dataloader = TankBindDataLoader(val, batch_sampler=val_sampler, shuffle=False, follow_batch=["ligand_in_pocket_mask"], num_workers=cfg.num_workers,)
+        train_dataloader = TankBindDataLoader(train,
+                                              batch_sampler=train_sampler,
+                                              follow_batch=["ligand_in_pocket_mask"],
+                                              shuffle=False,
+                                              num_workers=cfg.num_workers,
+                                              make_divisible_by_8=cfg.ablations.make_input_dims_divisible_by_8)
+        val_dataloader = TankBindDataLoader(val,
+                                            batch_sampler=val_sampler,
+                                            shuffle=False,
+                                            follow_batch=["ligand_in_pocket_mask"],
+                                            num_workers=cfg.num_workers,
+                                            make_divisible_by_8=cfg.ablations.make_input_dims_divisible_by_8)
     else:
         torch.manual_seed(1)
         G = torch.Generator()
@@ -84,16 +92,27 @@ def main(cfg):
         pretrain_dataset = TankBindDataset(add_esm_embeddings=cfg.ablations.esm_features, noise_range=cfg.training.add_noise, contact_threshold=cfg.tankbind.contact_threshold)
         pretrain_dataset_indices = (pretrain_dataset.pockets_df['name'].isin(train_indices).index).tolist()
         pretrain_dataset = pretrain_dataset[pretrain_dataset_indices]
-        pretrain_dataloader = TankBindDataLoader(pretrain_dataset, batch_size=cfg.training.batch_size, follow_batch=["ligand_in_pocket_mask"], shuffle=True, num_workers=cfg.num_workers,)
+        pretrain_dataloader = TankBindDataLoader(pretrain_dataset,
+                                                 batch_size=cfg.training.batch_size,
+                                                 follow_batch=["ligand_in_pocket_mask"],
+                                                 shuffle=True,
+                                                 num_workers=cfg.num_workers,
+                                                 make_divisible_by_8=cfg.ablations.make_input_dims_divisible_by_8)
         pre_trainer = pl.Trainer(max_epochs=cfg.training.pretraining_epochs,
                                     logger=wandb_logger,
                                     log_every_n_steps=100,
                                     accelerator="auto",
                                     precision=cfg.training.precision,
-                                    reload_dataloaders_every_n_epochs=1,
-                                    callbacks=get_callbacks(cfg,train,swa=cfg.training.swa.activate,),
+                                    callbacks=get_callbacks(cfg,
+                                                            train,
+                                                            swa=cfg.training.swa.activate,
+                                                            log_memory_allocated=cfg.training.log_memory_allocated,
+                                                            evaluation=cfg.training.evaluation,
+                                                            empty_cache=cfg.training.empty_cache,
+                                                            log_every_n_epochs=cfg.training.log_every_n_epochs,
+                                                            ),
                                     )
-        pre_trainer.fit(model, pretrain_dataloader, val_dataloader, ckpt_path="/fs/pool/pool-marsot/bindbind/training/logs/protein_binding/c9h2kwqo/checkpoints/epoch=14-step=425130.ckpt")
+        pre_trainer.fit(model, pretrain_dataloader, val_dataloader,)
         del pretrain_dataloader
         del pretrain_dataset_indices
         del pretrain_dataset
@@ -103,7 +122,6 @@ def main(cfg):
                                log_every_n_steps=100,
                                accelerator="auto",
                                precision=cfg.training.precision,
-                               reload_dataloaders_every_n_epochs=1,
                                callbacks=get_callbacks(cfg,
                                                        train,
                                                        swa=cfg.training.swa.activate,
@@ -117,8 +135,7 @@ def main(cfg):
     
     
     # See documentation: to profile training, we can use pytorch_lightning profiles: trainer = Trainer(profiler="advanced")
-    trainer.fit(model, train_dataloader, val_dataloader, ckpt_path="/fs/pool/pool-marsot/bindbind/training/logs/protein_binding/c9h2kwqo/checkpoints/epoch=68-step=188370.ckpt"
-)
+    trainer.fit(model, train_dataloader, val_dataloader,)
 
 
 if __name__ == "__main__":

@@ -1,19 +1,27 @@
+import os
 import torch
 from torch_geometric.data import Dataset, HeteroData
 from bindbind.datasets.processing.pocket_constructors import get_all_nodes_to_keep, get_all_noised_pairwise_distances
 import pickle
 import pandas as pd
 from lightning.pytorch.callbacks import Callback
+from bindbind.datasets.processing.ligand_features.tankbind_ligand_features import create_tankbind_ligand_features
 
-
-
-
+from bindbind.datasets.processing.ligand_features.tankbind_ligand_features import read_molecule, create_tankbind_ligand_features, get_LAS_distance_constraint_mask
+import rdkit.Chem as Chem
+from rdkit.Chem import Draw
+from rdkit.Chem import AllChem
+from rdkit.Geometry import Point3D
+from bindbind.experiments.ablations.regular.metrics.helper import generate_sdf_from_smiles_using_rdkit
 
 class TankBindDataset(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_processed", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0):
+    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_processed",
+                 add_esm_embeddings=None,
+                 noise_range=0.0,
+                 contact_threshold=8.0,
+                 pocket_radius=20.0,
+                 normalize_features=True):
         """
-        
-        
         Parameters
         ----------
         root: str
@@ -30,6 +38,7 @@ class TankBindDataset(Dataset):
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
         self.esm_embeddings = None
+        self.normalize_features = normalize_features
         super().__init__(root)
         self.esm_embeddings = torch.load(self.processed_paths[3]) if add_esm_embeddings else None
 
@@ -39,28 +48,38 @@ class TankBindDataset(Dataset):
 
         self.data = torch.load(self.processed_paths[2])
         self.pocket_radius = pocket_radius
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data, batch_size=256, pocket_radius=self.pocket_radius)
-    
-    def recompute_for_new_epoch(self):
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data, batch_size=256, pocket_radius=self.pocket_radius)
 
     def get(self, idx):
         # looking at protein name
         protein_name = self.pockets_df.iloc[idx]['name']
-        pocket_index = self.pockets_df.iloc[idx]["rank"] - 1 # ranks start at 1 in the dataframe. 
+        pocket_index = self.pockets_df.iloc[idx]["rank"] - 1 # ranks start at 1 in the dataframe.
         complex_features = self.data[protein_name]
+        pocket_center_coordinates = (complex_features["tankbind_protein_pocket_center_coordinates"][pocket_index]).unsqueeze(0)
+
         complex_features['affinity'] = self.affinity_dict[protein_name]
-        data = make_tankbind_data_object(complex_features)
+        noised_pocket_center_coordinates = pocket_center_coordinates + torch.randn_like(pocket_center_coordinates)*self.noise_range 
+
+        data = make_tankbind_data_object(complex_features, normalize_features=self.normalize_features)
+        protein_node_coordinates = complex_features["tankbind_protein_alpha_carbon_coordinates"]
+        compound_node_coordinates = complex_features["tankbind_ligand_atom_coordinates"]
+        noised_protein_node_coordinates = protein_node_coordinates + torch.randn_like(protein_node_coordinates) * self.noise_range
+        noised_compound_node_coordinates = compound_node_coordinates + torch.randn_like(compound_node_coordinates) * self.noise_range
+        noised_pairwise_distance = torch.cdist(noised_protein_node_coordinates, noised_compound_node_coordinates, compute_mode="donot_use_mm_for_euclid_dist")
+        data["protein", "distance_to", "compound"].edge_attr = noised_pairwise_distance.clamp(0,10)
+        mask = get_pocket_mask(noised_protein_node_coordinates, noised_pocket_center_coordinates, self.pocket_radius) 
+
+        
+        if self.normalize_features:
+            data["protein", "distance_to", "compound"].edge_attr = torch.nan_to_num((data["protein", "distance_to", "compound"].edge_attr - means_dict["protein_distance_to_compound"])/(stds_dict["protein_distance_to_compound"]+1e-3))
+
+
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
             # concatenate the ESM embeddings along the embedding dimension
             esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
             data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
        
-        data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name].clamp(0,10)
-        mask = self.protein_nodes_to_keep[protein_name][pocket_index]
+
         if mask.sum()<5:
             mask = torch.zeros_like(mask, dtype=torch.bool)
             mask[:100] = True
@@ -102,8 +121,9 @@ class TankBindDataset(Dataset):
         if self.add_esm_embeddings is not None:
             torch.save(esm_embeddings, self.processed_paths[3])
 
+
 class TankBindDatasetWithoutp2rank(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_processed_no_p2rank", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0):
+    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_processed_no_p2rank", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0, normalize_features=True):
         """
         Dataset where the pockets are epsilon-neighborhoods around
         the ligand center of mass, rather than p2rank-predicted pockets
@@ -119,10 +139,11 @@ class TankBindDatasetWithoutp2rank(Dataset):
             magnitude of the uniform noise that is added to the compound and protein node coordinates.
         contact_threshold: float
             threshold below which we consider that a compound node is touching a protein node.
-            """
+        """
         self.add_esm_embeddings = add_esm_embeddings
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
+        self.normalize_features = normalize_features
         super().__init__(root)
 
         self.proteins_df = torch.load(self.processed_paths[0])
@@ -131,46 +152,38 @@ class TankBindDatasetWithoutp2rank(Dataset):
         self.data = torch.load(self.processed_paths[1])
         self.esm_embeddings = torch.load(self.processed_paths[2]) if add_esm_embeddings else None
 
-        self.add_esm_embeddings = add_esm_embeddings
-        self.noise_range = noise_range
-        self.contact_threshold = contact_threshold
         self.pocket_radius = pocket_radius
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data,
-                                                            key_1="tankbind_protein_alpha_carbon_coordinates",
-                                                            key_2 = "tankbind_ligand_atom_coordinates",
-                                                            batch_size=256,
-                                                            pocket_radius=self.pocket_radius)
-    
-    def recompute_for_new_epoch(self):
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data,
-                                                            key_1="tankbind_protein_alpha_carbon_coordinates",
-                                                            key_2 = "tankbind_ligand_atom_coordinates",
-                                                            batch_size=256)
-
     def get(self, idx):
         # looking at protein name
         protein_name = self.proteins_df.iloc[idx]['protein_names']
-
         complex_features = self.data[protein_name]
-
         complex_features['affinity'] = self.affinity_dict[protein_name]
-        data = make_tankbind_data_object(complex_features)
+        protein_node_coordinates = complex_features["tankbind_protein_alpha_carbon_coordinates"]
+        compound_node_coordinates = complex_features["tankbind_ligand_atom_coordinates"]
+        noised_protein_node_coordinates = protein_node_coordinates + torch.randn_like(protein_node_coordinates) * self.noise_range
+        noised_compound_node_coordinates = compound_node_coordinates + torch.randn_like(compound_node_coordinates) * self.noise_range
+        noised_pairwise_distance = torch.cdist(noised_protein_node_coordinates, noised_compound_node_coordinates, compute_mode="donot_use_mm_for_euclid_dist")
+        compound_center_coordinates = compound_node_coordinates.mean(dim=0, keepdim=True)
+        noised_compound_center_of_mass_coordinates = compound_center_coordinates + torch.randn_like(compound_center_coordinates) * self.noise_range
+        mask = get_pocket_mask(protein_node_coordinates, noised_compound_center_of_mass_coordinates, self.pocket_radius) 
+
+
+        data = make_tankbind_data_object(complex_features, normalize_features=self.normalize_features)
+
+        data["protein", "distance_to", "compound"].edge_attr = noised_pairwise_distance.clamp(0,10)
+
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-            # concatenate the ESM embeddings along the embedding dimension
             esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
             data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
-       
-        data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
-        mask = self.protein_nodes_to_keep[protein_name][0]
-        if mask.sum()<5:
+
+        if self.normalize_features:
+            data["protein", "distance_to", "compound"].edge_attr = torch.nan_to_num((data["protein", "distance_to", "compound"].edge_attr - means_dict["protein_distance_to_compound"])/(stds_dict["protein_distance_to_compound"]+1e-3))
+
+        if mask.sum() < 5:
             mask = torch.zeros_like(mask, dtype=torch.bool)
             mask[:100] = True
-        # Removing protein residues outside of the pocket 
         data, _ligand_is_mostly_contained_in_pocket_sum = restrict_tankbind_data_to_pocket(data, mask, self.contact_threshold)
-
 
         # Make ligand_is_mostly_contained_in_protein_mask
         ligand_is_mostly_contained_in_pocket = True
@@ -178,36 +191,36 @@ class TankBindDatasetWithoutp2rank(Dataset):
         data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool()
 
         return data
-    
+
     def len(self):
         return len(self.proteins_df)
-    
+
     @property
     def processed_file_names(self):
-        return ["proteins_csv.pt", "data.pt",]+(["esm_embeddings_650m.pt"] if self.add_esm_embeddings=="650m" else [])+(["esm_embeddings_15B.pt"] if self.add_esm_embeddings=="15B" else [])
+        return ["proteins_csv.pt", "data.pt"] + (["esm_embeddings_650m.pt"] if self.add_esm_embeddings == "650m" else []) + (["esm_embeddings_15B.pt"] if self.add_esm_embeddings == "15B" else [])
 
     def process(self):
         proteins_df = pd.read_csv('/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/protein_paths_and_names.csv')
         data = {}
-        if self.add_esm_embeddings=="650m":
+        if self.add_esm_embeddings == "650m":
             with open("/fs/pool/pool-marsot/bindbind/datasets/processing/esmcheckpoints/esm_embeddings_650m.pkl", "rb") as f:
                 esm_embeddings = pickle.load(f)
-        elif self.add_esm_embeddings=="15B":
+        elif self.add_esm_embeddings == "15B":
             with open("/fs/pool/pool-marsot/bindbind/datasets/processing/esmcheckpoints/esm_embeddings_15B.pkl", "rb") as f:
                 esm_embeddings = pickle.load(f)
         for protein_name in proteins_df["protein_names"].tolist():
             with open(f"/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/PDBBind_processed/{protein_name}/{protein_name}_full_data.pkl", "rb") as f:
                 data[protein_name] = pickle.load(f)
-        
+
         torch.save(proteins_df, self.processed_paths[0])
         torch.save(data, self.processed_paths[1])
         if self.add_esm_embeddings is not None:
             torch.save(esm_embeddings, self.processed_paths[2])
 
+
 class TankBindTestDataset(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_test", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0):
+    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_test", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0, normalize_features=True):
         """
-        
         
         Parameters
         ----------
@@ -220,10 +233,11 @@ class TankBindTestDataset(Dataset):
             magnitude of the uniform noise that is added to the compound and protein node coordinates.
         contact_threshold: float
             threshold below which we consider that a compound node is touching a protein node.
-            """
+        """
         self.add_esm_embeddings = add_esm_embeddings
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
+        self.normalize_features = normalize_features
         super().__init__(root)
 
         self.proteins_df = torch.load(self.processed_paths[0])
@@ -232,53 +246,52 @@ class TankBindTestDataset(Dataset):
 
         self.data = torch.load(self.processed_paths[2])
         self.esm_embeddings = torch.load(self.processed_paths[3]) if add_esm_embeddings else None
-
-        self.add_esm_embeddings = add_esm_embeddings
-        self.noise_range = noise_range
-        self.contact_threshold = contact_threshold
-
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data, batch_size=256)
-    
-    def recompute_for_new_epoch(self):
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data, batch_size=256)
-
+        self.pocket_radius = pocket_radius
     def get(self, idx):
-        # looking at protein name
         protein_name = self.pockets_df.iloc[idx]['name']
-        pocket_index = self.pockets_df.iloc[idx]["rank"] - 1 # ranks start at 1 in the dataframe. 
+        pocket_index = self.pockets_df.iloc[idx]["rank"] - 1 # ranks start at 1 in the dataframe.
         complex_features = self.data[protein_name]
+        pocket_center_coordinates = (complex_features["tankbind_protein_pocket_center_coordinates"][pocket_index]).unsqueeze(0)
         complex_features['affinity'] = self.affinity_dict[protein_name]
-        data = make_tankbind_data_object(complex_features)
+        noised_pocket_center_coordinates = pocket_center_coordinates + torch.randn_like(pocket_center_coordinates)*self.noise_range 
+
+        data = make_tankbind_data_object(complex_features, normalize_features=self.normalize_features)
+        protein_node_coordinates = complex_features["tankbind_protein_alpha_carbon_coordinates"]
+        compound_node_coordinates = complex_features["tankbind_ligand_atom_coordinates"]
+        noised_protein_node_coordinates = protein_node_coordinates + torch.randn_like(protein_node_coordinates) * self.noise_range
+        noised_compound_node_coordinates = compound_node_coordinates + torch.randn_like(compound_node_coordinates) * self.noise_range
+        noised_pairwise_distance = torch.cdist(noised_protein_node_coordinates, noised_compound_node_coordinates, compute_mode="donot_use_mm_for_euclid_dist")
+        data["protein", "distance_to", "compound"].edge_attr = noised_pairwise_distance.clamp(0,10)
+        mask = get_pocket_mask(protein_node_coordinates, noised_pocket_center_coordinates, self.pocket_radius) 
+
+    
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-            # concatenate the ESM embeddings along the embedding dimension
             esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
-            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
-       
-        data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
-        mask = self.protein_nodes_to_keep[protein_name][pocket_index]
-        if mask.sum()<5:
+            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1)  # concatenate the ESM embeddings
+
+        if self.normalize_features:
+            data["protein", "distance_to", "compound"].edge_attr = torch.nan_to_num((data["protein", "distance_to", "compound"].edge_attr - means_dict["protein_distance_to_compound"]) / (stds_dict["protein_distance_to_compound"] + 1e-3))
+
+
+        if mask.sum() < 5:
             mask = torch.zeros_like(mask, dtype=torch.bool)
             mask[:100] = True
-        # Removing protein residues outside of the pocket 
         data, _ligand_is_mostly_contained_in_pocket_sum = restrict_tankbind_data_to_pocket(data, mask, self.contact_threshold)
 
-
         # Make ligand_is_mostly_contained_in_protein_mask
-        ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum/complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
+        ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum / complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
         data.ligand_is_mostly_contained_in_pocket = ligand_is_mostly_contained_in_pocket
-        data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool()*ligand_is_mostly_contained_in_pocket.bool()
-        data.affinity = self.affinity_dict[protein_name] 
+        data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool() * ligand_is_mostly_contained_in_pocket.bool()
+        data.affinity = self.affinity_dict[protein_name]
         return data
-    
+
     def len(self):
         return len(self.pockets_df)
-    
+
     @property
     def processed_file_names(self):
-        return ["proteins_csv.pt", "pockets_csv.pt", "data.pt",]+(["esm_embeddings_650m.pt"] if self.add_esm_embeddings=="650m" else [])+(["esm_embeddings_15B.pt"] if self.add_esm_embeddings=="15B" else [])
+        return ["proteins_csv.pt", "pockets_csv.pt", "data.pt"] + (["esm_embeddings_650m.pt"] if self.add_esm_embeddings == "650m" else []) + (["esm_embeddings_15B.pt"] if self.add_esm_embeddings == "15B" else [])
 
     def process(self):
         proteins_df = pd.read_csv('/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/protein_paths_and_names.csv')
@@ -286,16 +299,16 @@ class TankBindTestDataset(Dataset):
         with open("/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/tankbind_splits/timesplit_test", "r") as f:
             test_proteins = set(f.read().splitlines())
         data = {}
-        if self.add_esm_embeddings=="650m":
+        if self.add_esm_embeddings == "650m":
             with open("/fs/pool/pool-marsot/bindbind/datasets/processing/esmcheckpoints/esm_embeddings_650m.pkl", "rb") as f:
                 esm_embeddings = pickle.load(f)
-        elif self.add_esm_embeddings=="15B":
+        elif self.add_esm_embeddings == "15B":
             with open("/fs/pool/pool-marsot/bindbind/datasets/processing/esmcheckpoints/esm_embeddings_15B.pkl", "rb") as f:
                 esm_embeddings = pickle.load(f)
         for protein_name in set(proteins_df["protein_names"].tolist()).intersection(test_proteins):
             with open(f"/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/PDBBind_processed/{protein_name}/{protein_name}_full_data.pkl", "rb") as f:
                 data[protein_name] = pickle.load(f)
-        
+
         proteins_df = proteins_df[proteins_df["protein_names"].isin(test_proteins)]
         pockets_df = pockets_df[pockets_df["name"].isin(test_proteins)]
         torch.save(proteins_df, self.processed_paths[0])
@@ -304,10 +317,10 @@ class TankBindTestDataset(Dataset):
         if self.add_esm_embeddings is not None:
             torch.save(esm_embeddings, self.processed_paths[3])
 
+
 class TankBindValDataset(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_val", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0):
+    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_val", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0, normalize_features=True):
         """
-        
         
         Parameters
         ----------
@@ -320,10 +333,11 @@ class TankBindValDataset(Dataset):
             magnitude of the uniform noise that is added to the compound and protein node coordinates.
         contact_threshold: float
             threshold below which we consider that a compound node is touching a protein node.
-            """
+        """
         self.add_esm_embeddings = add_esm_embeddings
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
+        self.normalize_features = normalize_features
         super().__init__(root)
 
         self.proteins_df = torch.load(self.processed_paths[0])
@@ -332,53 +346,52 @@ class TankBindValDataset(Dataset):
 
         self.data = torch.load(self.processed_paths[2])
         self.esm_embeddings = torch.load(self.processed_paths[3]) if add_esm_embeddings else None
-
-        self.add_esm_embeddings = add_esm_embeddings
-        self.noise_range = noise_range
-        self.contact_threshold = contact_threshold
-
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data, batch_size=256)
-    
-    def recompute_for_new_epoch(self):
-        self.noised_pairwise_distances = get_all_noised_pairwise_distances(self.data, batch_size=256, noise_level=self.noise_range)
-        self.protein_nodes_to_keep = get_all_nodes_to_keep(self.data, batch_size=256)
-
+        self.pocket_radius = pocket_radius
     def get(self, idx):
-        # looking at protein name
         protein_name = self.pockets_df.iloc[idx]['name']
-        pocket_index = self.pockets_df.iloc[idx]["rank"] - 1 # ranks start at 1 in the dataframe. 
+        pocket_index = self.pockets_df.iloc[idx]["rank"] - 1 # ranks start at 1 in the dataframe.
         complex_features = self.data[protein_name]
+        pocket_center_coordinates = (complex_features["tankbind_protein_pocket_center_coordinates"][pocket_index]).unsqueeze(0)
+
         complex_features['affinity'] = self.affinity_dict[protein_name]
-        data = make_tankbind_data_object(complex_features)
+        noised_pocket_center_coordinates = pocket_center_coordinates + torch.randn_like(pocket_center_coordinates)*self.noise_range 
+
+        data = make_tankbind_data_object(complex_features, normalize_features=self.normalize_features)
+        protein_node_coordinates = complex_features["tankbind_protein_alpha_carbon_coordinates"]
+        compound_node_coordinates = complex_features["tankbind_ligand_atom_coordinates"]
+        noised_protein_node_coordinates = protein_node_coordinates + torch.randn_like(protein_node_coordinates) * self.noise_range
+        noised_compound_node_coordinates = compound_node_coordinates + torch.randn_like(compound_node_coordinates) * self.noise_range
+        noised_pairwise_distance = torch.cdist(noised_protein_node_coordinates, noised_compound_node_coordinates, compute_mode="donot_use_mm_for_euclid_dist")
+        data["protein", "distance_to", "compound"].edge_attr = noised_pairwise_distance.clamp(0,10)
+        mask = get_pocket_mask(protein_node_coordinates, noised_pocket_center_coordinates, self.pocket_radius) 
+
         # concatenate esm embeddings just before 
         if self.esm_embeddings is not None:
-            # concatenate the ESM embeddings along the embedding dimension
             esm_value = (self.esm_embeddings[protein_name])[complex_features["tankbind_residue_indices_in_contact_with_compound"]]
-            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1) # concatenate the ESM embeddings
-       
-        data["protein", "distance_to", "compound"].edge_attr = self.noised_pairwise_distances[protein_name]
-        mask = self.protein_nodes_to_keep[protein_name][pocket_index]
-        if mask.sum()<5:
+            data["protein"].node_scalar_features = torch.cat([data["protein"].node_scalar_features, esm_value], dim=-1)  # concatenate the ESM embeddings
+
+
+        if self.normalize_features:
+            data["protein", "distance_to", "compound"].edge_attr = torch.nan_to_num((data["protein", "distance_to", "compound"].edge_attr - means_dict["protein_distance_to_compound"]) / (stds_dict["protein_distance_to_compound"] + 1e-3))
+
+        if mask.sum() < 5:
             mask = torch.zeros_like(mask, dtype=torch.bool)
             mask[:100] = True
-        # Removing protein residues outside of the pocket 
         data, _ligand_is_mostly_contained_in_pocket_sum = restrict_tankbind_data_to_pocket(data, mask, self.contact_threshold)
 
-
         # Make ligand_is_mostly_contained_in_protein_mask
-        ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum/complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
+        ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum / complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
         data.ligand_is_mostly_contained_in_pocket = ligand_is_mostly_contained_in_pocket
-        data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool()*ligand_is_mostly_contained_in_pocket.bool()
-        data.affinity = self.affinity_dict[protein_name] 
+        data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool() * ligand_is_mostly_contained_in_pocket.bool()
+        data.affinity = self.affinity_dict[protein_name]
         return data
-    
+
     def len(self):
         return len(self.pockets_df)
-    
+
     @property
     def processed_file_names(self):
-        return ["proteins_csv.pt", "pockets_csv.pt", "data.pt",]+(["esm_embeddings_650m.pt"] if self.add_esm_embeddings=="650m" else [])+(["esm_embeddings_15B.pt"] if self.add_esm_embeddings=="15B" else [])
+        return ["proteins_csv.pt", "pockets_csv.pt", "data.pt"] + (["esm_embeddings_650m.pt"] if self.add_esm_embeddings == "650m" else []) + (["esm_embeddings_15B.pt"] if self.add_esm_embeddings == "15B" else [])
 
     def process(self):
         proteins_df = pd.read_csv('/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/protein_paths_and_names.csv')
@@ -386,16 +399,31 @@ class TankBindValDataset(Dataset):
         with open("/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/tankbind_splits/timesplit_no_lig_overlap_val", "r") as f:
             val_proteins = set(f.read().splitlines())
         data = {}
-        if self.add_esm_embeddings=="650m":
+        if self.add_esm_embeddings == "650m":
             with open("/fs/pool/pool-marsot/bindbind/datasets/processing/esmcheckpoints/esm_embeddings_650m.pkl", "rb") as f:
                 esm_embeddings = pickle.load(f)
-        elif self.add_esm_embeddings=="15B":
+        elif self.add_esm_embeddings == "15B":
             with open("/fs/pool/pool-marsot/bindbind/datasets/processing/esmcheckpoints/esm_embeddings_15B.pkl", "rb") as f:
                 esm_embeddings = pickle.load(f)
+
+        result_folder = "/fs/pool/pool-marsot/bindbind/experiments/ablations/regular/tankbind_predictions_2"
+        os.system(f"mkdir -p {result_folder}")
+
+        rdkit_folder = f"{result_folder}/rdkit/"
+        os.system(f"mkdir -p {rdkit_folder}")
         for protein_name in set(proteins_df["protein_names"].tolist()).intersection(val_proteins):
             with open(f"/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/PDBBind_processed/{protein_name}/{protein_name}_full_data.pkl", "rb") as f:
+                mol, _ = read_molecule(f"/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/PDBBind_processed/{protein_name}/{protein_name}_ligand_renumbered.sdf", None)
+                smiles = Chem.MolToSmiles(mol)
+                rdkit_mol_path = f"{rdkit_folder}/{protein_name}_ligand.sdf"
+                generate_sdf_from_smiles_using_rdkit(smiles, rdkit_mol_path, shift_dis=0)
+
+                mol, _ = read_molecule(rdkit_mol_path, None)
+
+                tankbind_ligand_features = create_tankbind_ligand_features(rdkit_mol_path, None, has_LAS_mask=True)
                 data[protein_name] = pickle.load(f)
-        
+                for key, item in tankbind_ligand_features.items():
+                    data[protein_name][key] = item
         proteins_df = proteins_df[proteins_df["protein_names"].isin(val_proteins)]
         pockets_df = pockets_df[pockets_df["name"].isin(val_proteins)]
         torch.save(proteins_df, self.processed_paths[0])
@@ -405,17 +433,10 @@ class TankBindValDataset(Dataset):
             torch.save(esm_embeddings, self.processed_paths[3])
 
 
-
-
-
-
-
-class NoisyCoordinates(Callback):
-    def __init__(self, dataset):
-        self.dataset = dataset
-    def on_train_epoch_end(self, trainer, pl_module):
-        self.dataset.recompute_for_new_epoch()
-        print("Recomputed noisy coordinates for new epoch")
+def get_pocket_mask(protein_node_coordinates, pocket_center_coordinates, pocket_radius):
+    """Get the mask of the protein nodes that are in the pocket."""
+    assert pocket_center_coordinates.dim() == 2
+    return (torch.norm(protein_node_coordinates - pocket_center_coordinates, dim=-1) < pocket_radius)
 
 
 def restrict_tankbind_data_to_pocket(data, mask, contact_threshold):
@@ -434,12 +455,12 @@ def restrict_tankbind_data_to_pocket(data, mask, contact_threshold):
     data["protein", "distance_to", "compound"].edge_attr = data["protein", "distance_to", "compound"].edge_attr[mask]
     # count the number of protein residues that are in contact with the ligand and in the ligand
     _ligand_is_mostly_contained_in_pocket_sum = (data["protein", "distance_to", "compound"].edge_attr < contact_threshold).sum()
-    data["protein", "distance_to", "compound"].edge_attr = data["protein", "distance_to", "compound"].edge_attr.flatten().contiguous()
+    data["protein", "distance_to", "compound"].edge_attr = data["protein", "distance_to", "compound"].edge_attr.flatten()
     return data, _ligand_is_mostly_contained_in_pocket_sum
 
 
 
-def make_tankbind_data_object(complex_dict):
+def make_tankbind_data_object(complex_dict, normalize_features=True):
     """Create the input for the model, without the target affinity and target pairwise distances"""
     data = HeteroData()
     data.complex_name = complex_dict["protein_name"]
@@ -475,7 +496,10 @@ def make_tankbind_data_object(complex_dict):
     assert torch.isnan(data["compound"].x).sum() == 0
     assert torch.isnan(data["compound", "to", "compound"].edge_attr).sum() == 0
     assert torch.isnan(data["compound", "distance_to", "compound"].edge_attr).sum() == 0
-    return normalize_data_features(data)
+    if normalize_features:
+        return normalize_data_features(data)
+    else:
+        return data
 
 
 means_dict = {"protein_node_coordinates": torch.tensor([17.631010055541992, 14.444746971130371, 21.412504196166992]),
@@ -486,6 +510,7 @@ means_dict = {"protein_node_coordinates": torch.tensor([17.631010055541992, 14.4
               "protein_distance_to_compound": torch.tensor(8.333386421203613),
               "compound_to_compound": torch.tensor([0.5834429264068604, 0.09144987910985947, 0.001274818554520607, 0.32383236289024353, 0.9850631952285767, 0.0, 0.0, 0.004669341258704662, 0.010267456993460655, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5256147384643555, 1.4313571453094482]),
               "affinity": torch.tensor(6.3677),
+              "protein_distance_to_compound": torch.tensor(9.7262)
               }
 
 vars_dict = {"protein_node_coordinates": torch.tensor([2417.467529296875, 2081.125244140625, 2309.912353515625]),
@@ -496,6 +521,7 @@ vars_dict = {"protein_node_coordinates": torch.tensor([2417.467529296875, 2081.1
                 "protein_distance_to_compound": torch.tensor(31.070316314697266),
                 "compound_to_compound": torch.tensor([0.24303746223449707, 0.08308686316013336, 0.0012731943279504776, 0.21896512806415558, 0.014713701792061329, 0.0, 0.0, 0.004647541791200638, 0.010162044316530228, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.24934406578540802, 0.011662687174975872]),
                 "affinity": torch.tensor(3.4767),
+                "protein_distance_to_compound": torch.tensor(0.7819)
                 }
 
 stds_dict = {key: torch.sqrt(value) for key, value in vars_dict.items()}
@@ -509,5 +535,9 @@ def normalize_data_features(data, epsilon = 1e-3):
     data["compound", "to", "compound"].edge_attr = torch.nan_to_num((data["compound", "to", "compound"].edge_attr - means_dict["compound_to_compound"])/(stds_dict["compound_to_compound"]+epsilon))
     data.affinity = torch.nan_to_num((data.affinity - means_dict["affinity"])/(stds_dict["affinity"]+epsilon))
     return data
+
+def denormalize_feature(tensor, feature, epsilon=1e-3):
+    unstandardized = tensor*(epsilon + stds_dict[feature])
+    return unstandardized + means_dict[feature]
 
 

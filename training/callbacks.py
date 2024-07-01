@@ -1,5 +1,5 @@
 from bindbind.training.sampler import DynamicSamplerProgressBar
-from bindbind.torch_datasets.tankbind_dataset import NoisyCoordinates
+
 from bindbind.experiments.ablations.regular.metrics.metrics_fast import evaluate_model_val
 from lightning.pytorch.callbacks import DeviceStatsMonitor, ModelCheckpoint, StochasticWeightAveraging
 
@@ -21,7 +21,6 @@ def get_callbacks(cfg,
     callbacks = []
     if cfg.training.adaptative_batch_size:
         callbacks.append(DynamicSamplerProgressBar(len(train)))
-    callbacks.append(NoisyCoordinates(train))
     if log_memory_allocated:
         callbacks.append(GPUMaxUtilizationCallback())
     callbacks.append(DeviceStatsMonitor())
@@ -153,7 +152,7 @@ class EvaluationCallback(Callback):
         self.log_every_n_epochs = log_every_n_epochs
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.log_every_n_epochs == self.log_every_n_epochs - 1:
-            df = evaluate_model_val(pl_module, batch_size=8)
+            df = evaluate_model_val(pl_module, batch_size=8, denormalize=True)
             dict_rmsd, dict_com_dist = df[["mean", '25%', '50%', '75%', '5A', '2A', 'median']].to_dict(orient="records")
             pl_module.log_dict(
                 dict_rmsd

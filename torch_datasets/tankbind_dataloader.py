@@ -11,13 +11,15 @@ class TankBindDataLoader(torch.utils.data.DataLoader):
                  shuffle=False,
                  follow_batch=None,
                  exclude_keys=None,
+                 make_divisible_by_8=True,
                  **kwargs):
         self.follow_batch = follow_batch
         self.exclude_keys = exclude_keys
+        self.make_divisible_by_8=make_divisible_by_8
         super().__init__(dataset,
                          batch_size,
                          shuffle,
-                         collate_fn=TankBindCollater(dataset, follow_batch, exclude_keys),
+                         collate_fn=TankBindCollater(dataset, follow_batch, exclude_keys, make_divisible_by_8=self.make_divisible_by_8),
                          **kwargs)
 
 
@@ -27,13 +29,18 @@ class TankBindCollater(Collater):
     forward pass on GPU."""
     def __init__(self, dataset,
                  follow_batch=None,
-                 exclude_keys=None):
+                 exclude_keys=None,
+                 make_divisible_by_8=True):
         super().__init__(dataset, follow_batch, exclude_keys)
-    
+        self.make_divisible_by_8 = make_divisible_by_8
     def __call__(self, batch):
         data = super().__call__(batch)
-        max_dim_divisible_by_8_protein = 8 * (torch.diff(data["protein"].ptr).max() // 8 + 1)
-        max_dim_divisible_by_8_compound = 8 * (torch.diff(data["compound"].ptr).max() // 8 + 1)
+        if self.make_divisible_by_8:
+            max_dim_divisible_by_8_protein = 8 * (torch.diff(data["protein"].ptr).max() // 8 + 1)
+            max_dim_divisible_by_8_compound = 8 * (torch.diff(data["compound"].ptr).max() // 8 + 1)
+        else:
+            max_dim_divisible_by_8_protein = torch.diff(data["protein"].ptr).max()
+            max_dim_divisible_by_8_compound = torch.diff(data["compound"].ptr).max()
         protein_coordinates_batched, _ = to_dense_batch(
             data["protein"].coordinates, data["protein"].batch,
             max_num_nodes=max_dim_divisible_by_8_protein,
@@ -81,9 +88,6 @@ class TankBindCollater(Collater):
 def get_pair_dis_index(d, bin_size=2, bin_min=-1, bin_max=30):
     """
     Computing pairwise distances and binning.
-
-
-    
     """
     pair_dis = torch.cdist(d, d, compute_mode='donot_use_mm_for_euclid_dist')
     pair_dis[pair_dis>bin_max] = bin_max

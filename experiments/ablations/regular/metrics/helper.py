@@ -49,6 +49,7 @@ def generate_conformation(mol):
             rid = AllChem.EmbedMolecule(mol, useRandomCoords=True)
         except:
             print("weird error")
+            rid = -1
     if rid == -1:
         mol.Compute2DCoords()
         coords = mol.GetConformer().GetPositions()
@@ -67,7 +68,7 @@ def write_with_new_coords(mol, new_coords, toFile):
     # w.SetKekulize(False)
     w.write(mol)
     w.close()
-def generate_sdf_from_smiles_using_rdkit(smiles, rdkitMolFile, shift_dis=30, fast_generation=False):
+def generate_sdf_from_smiles_using_rdkit(smiles, rdkitMolFile, shift_dis=0, fast_generation=False):
     mol_from_rdkit = Chem.MolFromSmiles(smiles)
     if fast_generation:
         # conformation generated using Compute2DCoords is very fast, but less accurate.

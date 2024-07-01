@@ -30,8 +30,7 @@ rdkit_folder_val = f"{result_folder_val}/rdkit/"
 os.system(f"mkdir -p {rdkit_folder_val}")
 from bindbind.datasets.processing.ligand_features.tankbind_ligand_features import read_molecule, create_tankbind_ligand_features, get_LAS_distance_constraint_mask
 from bindbind.experiments.ablations.regular.metrics.helper import compute_RMSD, write_with_new_coords, generate_sdf_from_smiles_using_rdkit, get_info_pred_distance, simple_custom_description, distribute_function
-
-
+from bindbind.torch_datasets.tankbind_dataset import denormalize_feature
 
 
 def evaluate_model_test(model,
@@ -178,10 +177,11 @@ def evaluate_model_test(model,
 
 
 def evaluate_model_val(model,
-                   batch_size=2,
+                   batch_size=8,
                    num_workers=8,
                    result_folder=result_folder_val,
-                   rdkit_folder=rdkit_folder_val):
+                   rdkit_folder=rdkit_folder_val,
+                   denormalize=True):
     device = model.device
     model.eval()
     compound_dict = {}
@@ -225,6 +225,9 @@ def evaluate_model_val(model,
 
         with torch.no_grad():
             y_pred, affinity_pred = model(data)
+            if denormalize:
+                y_pred = denormalize_feature(y_pred, "protein_distance_to_compound")
+                affinity_pred = denormalize_feature(affinity_pred, "affinity")
         affinity_pred_list.append(affinity_pred.detach().cpu())
         for i in range(data.batch_n):
             this_index_start += protein_sizes[i] * compound_sizes[i]
@@ -255,6 +258,8 @@ def evaluate_model_val(model,
 
         coords = compound_coordinates_dict[protein_name]
         protein_node_coordinates = dataset[dataset_index]["protein"].coordinates
+        if denormalize:
+            protein_node_coordinates = denormalize_feature(protein_node_coordinates, "protein_node_coordinates")
         n_compound = coords.shape[0]
         n_protein = protein_node_coordinates.shape[0]
         y_pred = y_pred_list[dataset_index]

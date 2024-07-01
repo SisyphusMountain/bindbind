@@ -2,6 +2,5 @@ defaults:
   - base_cfg
   - _self_
 
-
-tankbind:
-  old_model: true
+ablations:
+  fast_attention: false
