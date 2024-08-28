@@ -2,3 +2,7 @@ defaults:
   - base_cfg
   - _self_
 
+training:
+  num_samples: 3000
+
+  

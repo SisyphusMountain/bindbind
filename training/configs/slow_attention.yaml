@@ -4,3 +4,7 @@ defaults:
 
 ablations:
   fast_attention: false
+  make_input_dims_divisible_by_8: false
+training:
+  max_batch_size: 8
+  log_every_n_epochs: 5

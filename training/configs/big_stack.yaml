@@ -1,0 +1,9 @@
+defaults:
+  - use_3000_examples
+  - _self_
+
+ablations:
+  n_trigonometry_module_stack: 10
+
+training:
+  max_batch_size: 2

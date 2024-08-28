@@ -1,0 +1,10 @@
+defaults:
+  - base_cfg
+  - _self_
+
+ablations:
+  use_3000_examples: true
+
+training:
+  check_val_every_n_epoch: 10
+  max_batch_size: 5

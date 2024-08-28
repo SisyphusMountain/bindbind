@@ -1,0 +1,15 @@
+defaults:
+  - base_cfg
+  - _self_
+
+ablations:
+  pretraining: false
+  p2rank_before_true_pocket: true
+
+tankbind:
+  distogram_bins: 16
+
+training:
+  max_batch_size: 4
+  add_noise: 0.0
+  affinity_coeff: 0.001

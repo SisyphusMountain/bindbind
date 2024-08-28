@@ -14,14 +14,18 @@ tankbind:
   pocket_radius: 20.0
   contact_threshold: 8.0
   old_model: false
+  distogram_bins: null
 ablations:
   esm_features: null
   pretraining: true
+  p2rank_before_true_pocket: false
   use_gvp: true
   fast_attention: true
   make_input_dims_divisible_by_8: true
+  use_3000_examples: false
+  n_trigonometry_module_stack: 5
 training:
-  add_noise: 0.0
+  add_noise: 5.0
   lr: 0.00001
   precision: "32"
   available_memory_gb: 50
@@ -35,11 +39,20 @@ training:
     activate: false
   epochs: 200
   pretraining_epochs: 15
-  scheduler: null
   evaluation: true
   empty_cache: false
   log_every_n_epochs: 10
   log_memory_allocated: false
+  num_samples: 20000
+  gradnorm: false
+  check_val_every_n_epoch: 1
+  affinity_coeff: 0.01
+  affinity_coeff_epoch_max: 15
+  affinity_coeff_schedule: "constant"
+  scheduler:
+    type: null
+    total_iters: 15
+  distogram_coeff: null
 hydra:
   verbose: false
   run:

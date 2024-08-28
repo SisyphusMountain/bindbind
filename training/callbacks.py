@@ -17,7 +17,8 @@ def get_callbacks(cfg,
                   swa=True,
                   evaluation=True,
                   empty_cache=False,
-                  log_every_n_epochs=10):
+                  log_every_n_epochs=10,
+                  gradnorm=False,):
     callbacks = []
     if cfg.training.adaptative_batch_size:
         callbacks.append(DynamicSamplerProgressBar(len(train)))
@@ -31,6 +32,8 @@ def get_callbacks(cfg,
         callbacks.append(EmptyCache())
     if evaluation:
         callbacks.append(EvaluationCallback(log_every_n_epochs=log_every_n_epochs))
+    if gradnorm:
+        callbacks.append(GradNormCallback())
     return callbacks
 
 class GPUMaxUtilizationCallback(Callback):
@@ -157,7 +160,19 @@ class EvaluationCallback(Callback):
             pl_module.log_dict(
                 dict_rmsd
             )
-            pl_module.log_dict(
-                dict_com_dist
-            )
             print(df)
+
+
+class GradNormCallback(Callback):
+    def on_after_backward(self, trainer, pl_module):
+        dict_param_mean_square = gradient_norm(pl_module)
+        pl_module.log_dict(dict_param_mean_square)
+
+
+def gradient_norm(model):
+    dict_param_mean_square = {}
+    for name, p in model.named_parameters():
+        if p.grad is not None:
+            param_mean_square = p.grad.detach().data.norm(2)/p.grad.numel()
+            dict_param_mean_square[name] = param_mean_square
+    return dict_param_mean_square

@@ -4,12 +4,26 @@ import torch.nn.functional as F
 import lightning as L
 from .models.tankbind_layers import TankBindProteinEmbedding, TankBindUnembedding, GINE, TankBindTrigonometry, get_pair_dis_index
 from torch_geometric.utils import to_dense_batch
-from bindbind.models.targets.losses import total_loss
+from bindbind.models.targets.losses import total_loss, distogram_loss
 import logging
 from lightning.pytorch.utilities import grad_norm
 
 #logger = logging.getLogger(__name__)
 #logger.setLevel(logging.WARN)
+
+
+def constant_affinity_coeff(k):
+    def f(epoch):
+        return k
+    return f
+
+def exponential_affinity_coeff(k, epoch_max):
+    def f(epoch):
+        if epoch < epoch_max:
+            return k*2**(epoch-epoch_max)
+        else:
+            return k
+    return f
 
 
 class TankBindModel(L.LightningModule):
@@ -61,12 +75,20 @@ class TankBindModel(L.LightningModule):
                 for _ in range(n_trigonometry_module_stack)
             ]
         )
-        self.unembedding = TankBindUnembedding(embedding_channels, 1)
+        if self.cfg is not None:
+            self.unembedding = TankBindUnembedding(embedding_channels, self.cfg.tankbind.distogram_bins)
+        else:
+            self.unembedding = TankBindUnembedding(embedding_channels, None)
         self.layernorm = nn.LayerNorm(embedding_channels)
         self.n_heads=4
         self.protein_bin_max = protein_bin_max
         self.logger_fn = logger
-
+        if self.cfg is not None:
+            self.affinity_coeff_schedule = cfg.training.affinity_coeff_schedule
+            if self.affinity_coeff_schedule == "constant":
+                self.affinity_coeff = constant_affinity_coeff(cfg.training.affinity_coeff)
+            elif self.affinity_coeff_schedule == "exponential":
+                self.affinity_coeff = exponential_affinity_coeff(cfg.training.affinity_coeff, cfg.training.affinity_coeff_epoch_max)
     def forward(self, data):
         max_dim_divisible_by_8_protein = data.max_dim_divisible_by_8_protein
         max_dim_divisible_by_8_compound = data.max_dim_divisible_by_8_compound
@@ -161,18 +183,27 @@ class TankBindModel(L.LightningModule):
 
     def training_step(self, data, batch_idx):
         #logger.info(f"[Beginning Batch - training step] Batch {batch_idx}")
-        y_pred, affinity_pred = self(data)
+        if self.cfg.tankbind.distogram_bins is None:
+            y_pred, affinity_pred = self(data)
+        else:
+            y_pred, affinity_pred, bin_distances = self(data)
         #logger.info(f"[Beginning Batch - model output] y_pred Nans:{torch.isnan(y_pred).sum().detach().cpu()}; affinity_pred Nans:{torch.isnan(affinity_pred).sum().detach().cpu()}")
 
         affinity_target = data.affinity
         y_target = data['protein', 'distance_to', 'compound'].edge_attr
         e = self.current_epoch
-        affinity_coeff = min(0.01, 0.01*2**e/2**15)
+        affinity_coeff = self.affinity_coeff(e)
         affinity_mask = data.ligand_is_mostly_contained_in_pocket
         pocket_mask = data.ligand_in_pocket_mask
+        if self.cfg.tankbind.distogram_bins is not None:
+            dist_loss = distogram_loss(bin_distances, y_target, n_bins=self.cfg.tankbind.distogram_bins)
         mse, affinity_loss = total_loss(y_pred, y_target, affinity_pred, affinity_target, pocket_mask, affinity_mask)
         #logger.info(f"[Beginning Batch - losses output] MSE {mse.detach().cpu()}; Affinity Loss {affinity_loss.detach().cpu()}; Affinity coef {affinity_coeff}; Epoch {e}")
         loss = mse + affinity_coeff*affinity_loss
+        if self.cfg.tankbind.distogram_bins is not None:
+            loss += self.cfg.training.distogram_coeff*dist_loss
+        if self.cfg.tankbind.distogram_bins is not None:
+            self.log('train_distogram_loss', dist_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log('train_mse', mse, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log('train_affinity_loss', affinity_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log('affinity_coeff', affinity_coeff, on_step=True, on_epoch=False, prog_bar=True, logger=True)
@@ -191,9 +222,10 @@ class TankBindModel(L.LightningModule):
         return loss
 
     def validation_step(self, data, batch_idx):
-        y_pred, affinity_pred = self(data)
-
-
+        if self.cfg.tankbind.distogram_bins is None:
+            y_pred, affinity_pred = self(data)
+        else:
+            y_pred, affinity_pred, bin_distances = self(data)  
         affinity_target = data.affinity
         y_target = data['protein', 'distance_to', 'compound'].edge_attr
         affinity_mask = data.ligand_is_mostly_contained_in_pocket
@@ -213,8 +245,13 @@ class TankBindModel(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.training.lr)
 
         if self.cfg.training.scheduler is not None:
-            raise NotImplementedError("Scheduler not implemented yet")
-            return {"optimizer":optimizer, "lr_scheduler":scheduler}
+            if self.cfg.training.scheduler.type == "linear":
+                scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer,
+                                                            start_factor=0.1,
+                                                            end_factor=1.0,
+                                                            total_iters=self.cfg.training.scheduler.total_iters,
+                                                            )
+                return {"optimizer":optimizer, "lr_scheduler":scheduler}
 
         else:
             return optimizer

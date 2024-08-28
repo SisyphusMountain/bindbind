@@ -20,7 +20,8 @@ class TankBindDataset(Dataset):
                  noise_range=0.0,
                  contact_threshold=8.0,
                  pocket_radius=20.0,
-                 normalize_features=True):
+                 normalize_features=True,
+                 **kwargs):
         """
         Parameters
         ----------
@@ -39,7 +40,7 @@ class TankBindDataset(Dataset):
         self.contact_threshold = contact_threshold
         self.esm_embeddings = None
         self.normalize_features = normalize_features
-        super().__init__(root)
+        super().__init__(root, **kwargs)
         self.esm_embeddings = torch.load(self.processed_paths[3]) if add_esm_embeddings else None
 
         self.proteins_df = torch.load(self.processed_paths[0])
@@ -91,7 +92,7 @@ class TankBindDataset(Dataset):
         ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum/complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
         data.ligand_is_mostly_contained_in_pocket = ligand_is_mostly_contained_in_pocket.bool()
         data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool() if ligand_is_mostly_contained_in_pocket else torch.zeros(data["protein", "distance_to", "compound"].edge_attr.shape).bool()
-        data.affinity = self.affinity_dict[protein_name] 
+   
         return data
     
     def len(self):
@@ -123,7 +124,14 @@ class TankBindDataset(Dataset):
 
 
 class TankBindDatasetWithoutp2rank(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_processed_no_p2rank", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0, normalize_features=True):
+    def __init__(self,
+                 root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_processed_no_p2rank",
+                 add_esm_embeddings=None,
+                 noise_range=0.0,
+                 contact_threshold=8.0,
+                 pocket_radius=20.0,
+                 normalize_features=True,
+                 **kwargs):
         """
         Dataset where the pockets are epsilon-neighborhoods around
         the ligand center of mass, rather than p2rank-predicted pockets
@@ -144,7 +152,7 @@ class TankBindDatasetWithoutp2rank(Dataset):
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
         self.normalize_features = normalize_features
-        super().__init__(root)
+        super().__init__(root, **kwargs)
 
         self.proteins_df = torch.load(self.processed_paths[0])
         self.affinity_dict = self.proteins_df.set_index('protein_names')['affinity'].to_dict()
@@ -219,7 +227,14 @@ class TankBindDatasetWithoutp2rank(Dataset):
 
 
 class TankBindTestDataset(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_test", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0, normalize_features=True):
+    def __init__(self,
+                 root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_test",
+                 add_esm_embeddings=None,
+                 noise_range=0.0,
+                 contact_threshold=8.0,
+                 pocket_radius=20.0,
+                 normalize_features=True,
+                 **kwargs):
         """
         
         Parameters
@@ -238,7 +253,7 @@ class TankBindTestDataset(Dataset):
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
         self.normalize_features = normalize_features
-        super().__init__(root)
+        super().__init__(root, **kwargs)
 
         self.proteins_df = torch.load(self.processed_paths[0])
         self.pockets_df = torch.load(self.processed_paths[1])
@@ -283,7 +298,6 @@ class TankBindTestDataset(Dataset):
         ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum / complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
         data.ligand_is_mostly_contained_in_pocket = ligand_is_mostly_contained_in_pocket
         data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool() * ligand_is_mostly_contained_in_pocket.bool()
-        data.affinity = self.affinity_dict[protein_name]
         return data
 
     def len(self):
@@ -319,7 +333,14 @@ class TankBindTestDataset(Dataset):
 
 
 class TankBindValDataset(Dataset):
-    def __init__(self, root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_val", add_esm_embeddings=None, noise_range=0.0, contact_threshold=8.0, pocket_radius=20.0, normalize_features=True):
+    def __init__(self,
+                 root="/fs/pool/pool-marsot/bindbind/datasets/tankbind_val",
+                 add_esm_embeddings=None,
+                 noise_range=0.0,
+                 contact_threshold=8.0,
+                 pocket_radius=20.0,
+                 normalize_features=True,
+                 **kwargs):
         """
         
         Parameters
@@ -338,7 +359,7 @@ class TankBindValDataset(Dataset):
         self.noise_range = noise_range
         self.contact_threshold = contact_threshold
         self.normalize_features = normalize_features
-        super().__init__(root)
+        super().__init__(root, **kwargs)
 
         self.proteins_df = torch.load(self.processed_paths[0])
         self.pockets_df = torch.load(self.processed_paths[1])
@@ -383,7 +404,6 @@ class TankBindValDataset(Dataset):
         ligand_is_mostly_contained_in_pocket = _ligand_is_mostly_contained_in_pocket_sum / complex_features["tankbind_num_protein_nodes_close_to_ligand_and_in_contact_with_ligand"] >= 0.9
         data.ligand_is_mostly_contained_in_pocket = ligand_is_mostly_contained_in_pocket
         data.ligand_in_pocket_mask = torch.ones(data["protein", "distance_to", "compound"].edge_attr.shape).bool() * ligand_is_mostly_contained_in_pocket.bool()
-        data.affinity = self.affinity_dict[protein_name]
         return data
 
     def len(self):
@@ -501,38 +521,52 @@ def make_tankbind_data_object(complex_dict, normalize_features=True):
     else:
         return data
 
+from torch import tensor
+means_dict = {'protein_node_scalar_features': tensor([ 0.0727457255,  0.1325012892, -0.9804269075, -0.7606167793,
+         0.0248864293,  0.0118933702]), 
+        'protein_node_vector_features': tensor([[-0.0006267764,  0.0006361017,  0.0003718575],
+        [ 0.0006267764, -0.0006361017, -0.0003718575],
+        [-0.0001250555,  0.0010360993, -0.0001783383]]),
+    'protein_edge_scalar_features': tensor([ 6.9658167376e-06,  1.3754346874e-03,  3.1302969903e-02,
+         1.0506523401e-01,  1.6300360858e-01,  1.7937441170e-01,
+         2.1146914363e-01,  3.1705018878e-01,  3.0818232894e-01,
+         1.8676058948e-01,  9.4478376210e-02,  4.0007371455e-02,
+         1.4457522891e-02,  5.0572101027e-03,  1.9602947868e-03,
+         8.6626538541e-04, -3.6794535816e-02,  9.7907505929e-02,
+         2.7249491215e-01,  4.7467842698e-01,  7.6569545269e-01,
+         9.5167309046e-01,  9.9420434237e-01,  9.9940609932e-01,
+        -6.3369655982e-04,  2.6633599191e-04,  7.6850854384e-05,
+         5.2463921020e-04, -1.2254845351e-03,  1.4618394198e-04,
+         1.0501391807e-04,  3.4044867789e-05]), 
+         'protein_edge_vector_features': tensor([[-2.4531493546e-04, -2.2749346681e-04, -6.0290578404e-05]]),
+         'protein_distance_to_compound': tensor(9.8255100250),
+         'affinity': tensor(6.3676585872)}
 
-means_dict = {"protein_node_coordinates": torch.tensor([17.631010055541992, 14.444746971130371, 21.412504196166992]),
-              "protein_node_scalar_features": torch.tensor([0.07262682914733887, 0.1329594999551773, -0.9804213643074036, -0.760931670665741, 0.02471655048429966, 0.011947994120419025]),
-              "protein_node_vector_features": torch.tensor([[-0.0005944063304923475, 0.0004770602972712368, 0.0003047776408493519], [0.0005944063304923475, -0.0004770602972712368, -0.0003047776408493519], [-9.438615961698815e-05, 0.0009057653369382024, -0.00030406430596485734]]),
-              "protein_edge_scalar_features": torch.tensor([6.944148026377661e-06, 0.001373058999888599, 0.03128135949373245, 0.10510130971670151, 0.1631690412759781, 0.17957991361618042, 0.2117183655500412, 0.3174160420894623, 0.30822935700416565, 0.18642766773700714, 0.09413681924343109, 0.039788469672203064, 0.014366302639245987, 0.005030795466154814, 0.001948254881426692, 0.0008591284276917577, -0.03676437586545944, -0.03928199037909508, -0.027324488386511803, -0.04502237215638161, -0.03382807597517967, -0.0309743732213974, -0.03358544036746025, -0.00877009890973568, -0.0006605424568988383, -0.0003721231478266418, 2.121787292708177e-05, 8.425789928878658e-06, 4.6160774218151346e-05, -9.526106623525266e-06, 0.0002609408984426409, 4.474521119846031e-05]),
-              "protein_edge_vector_features": torch.tensor([[-0.0002645916829351336, -0.0002201295574195683, -3.9455248042941093e-05]]),
-              "protein_distance_to_compound": torch.tensor(8.333386421203613),
-              "compound_to_compound": torch.tensor([0.5834429264068604, 0.09144987910985947, 0.001274818554520607, 0.32383236289024353, 0.9850631952285767, 0.0, 0.0, 0.004669341258704662, 0.010267456993460655, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5256147384643555, 1.4313571453094482]),
-              "affinity": torch.tensor(6.3677),
-              "protein_distance_to_compound": torch.tensor(9.7262)
-              }
+stds_dict = {'protein_node_scalar_features': tensor([0.4711185396, 0.7746803761, 0.1705850214, 0.4407012165, 0.6178143024,
+        0.0975829586]),
+        'protein_node_vector_features': tensor([[0.5764503479, 0.5763314366, 0.5768814683],
+        [0.5764503479, 0.5763314366, 0.5768814683],
+        [0.5775108337, 0.5781271458, 0.5764107108]]),
+        'protein_edge_scalar_features': tensor([6.2377876020e-05, 5.5922851898e-03, 1.0898678005e-01, 2.6428866386e-01,
+        3.0745354295e-01, 3.0576357245e-01, 3.0775597692e-01, 3.6643519998e-01,
+        3.6639633775e-01, 3.0458340049e-01, 2.3440334201e-01, 1.5616969764e-01,
+        9.3920931220e-02, 5.5855795741e-02, 3.5477731377e-02, 2.3793805391e-02,
+        6.9635939598e-01, 6.8488472700e-01, 7.2912204266e-01, 6.6055721045e-01,
+        4.5727527142e-01, 1.5990658104e-01, 2.7558168396e-02, 3.0823557172e-03,
+        7.1674913168e-01, 7.2204363346e-01, 6.2779581547e-01, 5.8167368174e-01,
+        4.5233646035e-01, 2.6219883561e-01, 1.0391493887e-01, 3.4320969135e-02]),
+        'protein_edge_vector_features': tensor([[0.5767907500, 0.5773115158, 0.5779478550]]),
+        'protein_distance_to_compound': tensor(0.7166844010),
+        'affinity': tensor(1.8645911818)}
 
-vars_dict = {"protein_node_coordinates": torch.tensor([2417.467529296875, 2081.125244140625, 2309.912353515625]),
-             "protein_node_scalar_features": torch.tensor([0.2213876098394394, 0.6002227067947388, 0.02893569879233837, 0.19432076811790466, 0.3814883232116699, 0.009695463813841343]),
-                "protein_node_vector_features": torch.tensor([[0.33243584632873535, 0.33213087916374207, 0.33270949125289917], [0.33243584632873535, 0.33213087916374207, 0.33270949125289917], [0.3334696292877197, 0.3342677056789398, 0.33226191997528076]]),
-                "protein_edge_scalar_features": torch.tensor([3.820823657463279e-09, 3.113720958936028e-05, 0.011859781108796597, 0.06986543536186218, 0.09459588676691055, 0.0935622900724411, 0.0947701707482338, 0.13434819877147675, 0.1342504769563675, 0.09262754023075104, 0.054759006947278976, 0.02425190433859825, 0.008764220401644707, 0.0031063344795256853, 0.0012501657474786043, 0.0005616022972390056, 0.48492634296417236, 0.48378145694732666, 0.4840312898159027, 0.48184001445770264, 0.4788280129432678, 0.47806236147880554, 0.48250657320022583, 0.5102618336677551, 0.5137215852737427, 0.5146753191947937, 0.5152220726013184, 0.5161329507827759, 0.5200276374816895, 0.5209782123565674, 0.5163654088973999, 0.4896612763404846]),
-                "protein_edge_vector_features": torch.tensor([[0.33269432187080383, 0.33325907588005066, 0.33404645323753357]]),
-                "protein_distance_to_compound": torch.tensor(31.070316314697266),
-                "compound_to_compound": torch.tensor([0.24303746223449707, 0.08308686316013336, 0.0012731943279504776, 0.21896512806415558, 0.014713701792061329, 0.0, 0.0, 0.004647541791200638, 0.010162044316530228, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.24934406578540802, 0.011662687174975872]),
-                "affinity": torch.tensor(3.4767),
-                "protein_distance_to_compound": torch.tensor(0.7819)
-                }
-
-stds_dict = {key: torch.sqrt(value) for key, value in vars_dict.items()}
 
 def normalize_data_features(data, epsilon = 1e-3):
-    data["protein"].coordinates = torch.nan_to_num((data["protein"].coordinates - means_dict["protein_node_coordinates"])/(stds_dict["protein_node_coordinates"]+epsilon))
+    # Should not normalize protein coordinates because they are binned.
+    #data["protein"].coordinates = torch.nan_to_num((data["protein"].coordinates - means_dict["protein_node_coordinates"])/(stds_dict["protein_node_coordinates"]+epsilon))
     data["protein"].node_scalar_features = torch.nan_to_num((data["protein"].node_scalar_features - means_dict["protein_node_scalar_features"])/(stds_dict["protein_node_scalar_features"]+epsilon))
     data["protein"].node_vector_features = torch.nan_to_num((data["protein"].node_vector_features - means_dict["protein_node_vector_features"])/(stds_dict["protein_node_vector_features"]+epsilon))
     data["protein", "to", "protein"].edge_scalar_features = torch.nan_to_num((data["protein", "to", "protein"].edge_scalar_features - means_dict["protein_edge_scalar_features"])/(stds_dict["protein_edge_scalar_features"]+epsilon))
     data["protein", "to", "protein"].edge_vector_features = torch.nan_to_num((data["protein", "to", "protein"].edge_vector_features - means_dict["protein_edge_vector_features"])/(stds_dict["protein_edge_vector_features"]+epsilon))
-    data["compound", "to", "compound"].edge_attr = torch.nan_to_num((data["compound", "to", "compound"].edge_attr - means_dict["compound_to_compound"])/(stds_dict["compound_to_compound"]+epsilon))
     data.affinity = torch.nan_to_num((data.affinity - means_dict["affinity"])/(stds_dict["affinity"]+epsilon))
     return data
 

@@ -38,6 +38,7 @@ def evaluate_model_test(model,
                    num_workers=8,
                    result_folder=result_folder_test,
                    rdkit_folder=rdkit_folder_test):
+    model.eval()
     device = model.device
     compound_dict = {}
     test = np.loadtxt("/fs/pool/pool-marsot/bindbind/datasets/data/equibind_dataset/tankbind_splits/timesplit_test", dtype=str)

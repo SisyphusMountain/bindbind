@@ -2,5 +2,5 @@ defaults:
   - use_3000_examples
   - _self_
 
-ablations:
-  esm_features: "650m"
+training:
+  add_noise: 0.0

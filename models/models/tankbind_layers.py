@@ -41,10 +41,12 @@ class TankBindTransition(nn.Module):
 class FastTriangleSelfAttention(nn.Module):
     def __init__(self, embedding_channels, num_attention_heads):
         super().__init__()
+        self.layernorm = nn.LayerNorm(embedding_channels, bias=False)
         self.num_attention_heads = num_attention_heads
         self.attention_head_size = embedding_channels // num_attention_heads
         self.linear_qkv = nn.Linear(embedding_channels, 3*embedding_channels, bias=False)
         self.output_linear = nn.Linear(embedding_channels, embedding_channels)
+        self.g = nn.Linear(embedding_channels, embedding_channels)
     def forward(self, z, z_mask_attention_float, z_mask):
         """
         Parameters
@@ -56,6 +58,7 @@ class FastTriangleSelfAttention(nn.Module):
         Returns
         -------
         """
+        z = self.layernorm(z)
         batch_size, n_protein, n_compound, embedding_channels = z.shape
         z = z.reshape(batch_size*n_protein, n_compound, embedding_channels)
         q, k, v = self.linear_qkv(z).chunk(3, dim=-1)
@@ -65,10 +68,13 @@ class FastTriangleSelfAttention(nn.Module):
         attention_coefficients = xops.memory_efficient_attention(query=q,
                                                 key=k,
                                                 value=v,
-                                                attn_bias=z_mask_attention_float) # shape [batch*protein_nodes, compound_nodes, n_heads, embedding//n_heads]        
-        
-        attention_output = attention_coefficients.permute(0, 2, 1, 3).contiguous().view(batch_size, n_protein, n_compound, embedding_channels)
-        output = self.output_linear(attention_output)
+                                                attn_bias=z_mask_attention_float.to("cuda:0")) # shape [batch*protein_nodes, compound_nodes, n_heads, embedding//n_heads]        
+
+        attention_output = attention_coefficients.view(batch_size, n_protein, n_compound, embedding_channels)
+        g = self.g(z).sigmoid()
+        output = g * attention_output.view(batch_size*n_protein, n_compound, embedding_channels)
+
+        output = self.output_linear(output.view(batch_size, n_protein, n_compound, embedding_channels))*z_mask.unsqueeze(-1).to('cuda:0')
         return output
 
 class TankBindTriangleSelfAttention(torch.nn.Module):
@@ -107,7 +113,8 @@ class TankBindTriangleSelfAttention(torch.nn.Module):
         k = self.reshape_last_dim(self.linear_k(z))
         v = self.reshape_last_dim(self.linear_v(z))
         #import IPython; IPython.embed()
-        logits = torch.einsum("biqhc,bikhc->bihqk", q, k) + z_mask_float
+        logits = torch.einsum("biqhc,bikhc->bihqk", q, k)/self.attention_head_size**0.5
+        logits += z_mask_float.view(logits.shape)
         weights = nn.Softmax(dim=-1)(logits)
         # weights of shape b, h, j, j
         # attention_probs = self.dp(attention_probs)
@@ -129,7 +136,7 @@ class TankBindTriangleProteinToCompound(torch.nn.Module):
     # separate left/right edges (block1/block2).
     def __init__(self, embedding_channels, c):
         super().__init__()
-        self.layernorm = torch.nn.LayerNorm(embedding_channels, bias=False)#BUG: in original code, this has a bias. It should not be the case, otherwise the bias can propagate from false entries that should be 0 and fuck up our masking
+        self.layernorm = torch.nn.LayerNorm(embedding_channels, bias=False)#BUG: in original code, this has a bias. It should not be the case, otherwise the bias can propagate from false entries that should be 0 and destroy our masking
         self.layernorm_c = torch.nn.LayerNorm(c, bias=False)
 
         self.gate_linear1 = nn.Linear(embedding_channels, c, bias=False) 
@@ -827,23 +834,29 @@ class TankBindGLULinear(nn.Module):
 
 
 class TankBindUnembedding(nn.Module):
-    def __init__(self, embedding_channels, c):
+    def __init__(self, embedding_channels, distogram_bins=None):
         super().__init__()
         self.glu = TankBindGLULinear(embedding_channels, embedding_channels)
         self.linear = nn.Linear(embedding_channels, 1)
         self.bias = nn.Parameter(torch.tensor(0.27))
-        self.batch_norm = nn.BatchNorm1d(embedding_channels)
+        self.batch_norm = nn.BatchNorm1d(embedding_channels, )
         self.energy_linear = nn.Linear(embedding_channels, 1)
+        if distogram_bins is not None:
+            self.distogram_bins = distogram_bins
+            self.histogram_linear = nn.Linear(embedding_channels, distogram_bins)
     def forward(self, z, z_mask, z_mask_flat):
         y_pred = self.linear(z).flatten()[z_mask_flat]
         y_pred = 10*nn.functional.tanh(y_pred)+self.bias
 
-        z_glu = self.glu(z)
+        z_glu = self.glu(z)*z_mask.unsqueeze(-1)
         z_glu = self.batch_norm(z_glu.view(-1, z_glu.shape[-1])).view(z_glu.shape)
-        z_glu = F.relu(z_glu)
+        z_glu = F.relu(z_glu)*z_mask.unsqueeze(-1)
         z_glu = self.energy_linear(z_glu).squeeze(-1) * z_mask
         z_glu = z_glu.sum(dim=(-1, -2))/100
         affinity_pred = 5*torch.tanh(z_glu)
+        if hasattr(self, "histogram_linear"):
+            histogram_pred = self.histogram_linear(z).view(-1, self.distogram_bins)[z_mask_flat]
+            return y_pred, affinity_pred, histogram_pred
         return y_pred, affinity_pred
 
 class NoSigmoidUnembedding(nn.Module):
